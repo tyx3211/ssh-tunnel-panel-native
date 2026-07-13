@@ -1,0 +1,25 @@
+name = "ssh-tunnel-panel"
+product-name = "SSH Tunnel Panel"
+identifier = "com.tyx3211.sshtunnelpanel.native"
+version = "0.2.0"
+publisher = "tyx3211"
+description = "A fast, native Windows panel for persistent SSH local and remote forwarding."
+long-description = "Manage persistent OpenSSH -L and -R tunnel definitions from a compact native Windows panel with host discovery, status reporting, and tray lifecycle management."
+homepage = "https://github.com/tyx3211/ssh-tunnel-panel-native"
+license-file = "LICENSE"
+icons = ["build/icon.ico"]
+formats = ["nsis"]
+out-dir = "dist"
+binaries-dir = "target/release"
+binaries = [{ path = "ssh-tunnel-panel", main = true }]
+
+[nsis]
+installer-mode = "currentUser"
+compression = "lzma"
+installer-icon = "build/icon.ico"
+languages = ["English", "SimpChinese"]
+display-language-selector = false
+appdata-paths = ["$APPDATA/ssh-tunnel-panel"]
+
+[windows]
+allow-downgrades = false

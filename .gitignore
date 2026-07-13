@@ -1,0 +1,6 @@
+/target/
+/dist/
+/.cargo-packager/
+/.cache/
+*.log
+*.err
