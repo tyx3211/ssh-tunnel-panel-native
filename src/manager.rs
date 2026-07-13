@@ -279,22 +279,46 @@ impl TunnelManager {
     }
 
     pub fn start_all(&mut self) -> Vec<(ForwardId, ManagerError)> {
-        let ids: Vec<_> = self
-            .persisted
-            .forwards
-            .iter()
-            .map(|forward| forward.id.clone())
-            .collect();
+        self.start_matching(None)
+    }
+
+    pub fn start_for_host(&mut self, host_alias: &str) -> Vec<(ForwardId, ManagerError)> {
+        self.start_matching(Some(host_alias))
+    }
+
+    fn start_matching(&mut self, host_alias: Option<&str>) -> Vec<(ForwardId, ManagerError)> {
+        let ids = self.forward_ids_for_host(host_alias);
         ids.into_iter()
             .filter_map(|id| self.start_forward(&id).err().map(|error| (id, error)))
             .collect()
     }
 
     pub fn stop_all(&mut self) {
-        let ids: Vec<_> = self.processes.keys().cloned().collect();
+        self.stop_matching(None);
+    }
+
+    pub fn stop_for_host(&mut self, host_alias: &str) {
+        self.stop_matching(Some(host_alias));
+    }
+
+    fn stop_matching(&mut self, host_alias: Option<&str>) {
+        let ids: Vec<_> = self
+            .forward_ids_for_host(host_alias)
+            .into_iter()
+            .filter(|id| self.processes.contains_key(id))
+            .collect();
         for id in ids {
             self.stop_forward(&id);
         }
+    }
+
+    fn forward_ids_for_host(&self, host_alias: Option<&str>) -> Vec<ForwardId> {
+        self.persisted
+            .forwards
+            .iter()
+            .filter(|forward| host_alias.is_none_or(|alias| forward.host_alias.as_str() == alias))
+            .map(|forward| forward.id.clone())
+            .collect()
     }
 
     pub fn clear_logs(&mut self, id: &ForwardId) {
@@ -516,5 +540,34 @@ mod tests {
 
         assert_eq!(hosts.len(), 1);
         assert_eq!(hosts[0].host_name.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn selects_only_the_requested_host_for_bulk_actions() {
+        let (_directory, mut manager) = manager();
+        let dev_id = manager
+            .save_forward(draft())
+            .expect("dev forward must be saved");
+        let mut production = draft();
+        production.name = "Production".into();
+        production.host_alias = "production".into();
+        production.listen_port = 30_001;
+        let production_id = manager
+            .save_forward(production)
+            .expect("production forward must be saved");
+
+        assert_eq!(
+            manager.forward_ids_for_host(Some("dev")),
+            vec![dev_id.clone()]
+        );
+        assert_eq!(
+            manager.forward_ids_for_host(Some("production")),
+            vec![production_id.clone()]
+        );
+        assert!(manager.forward_ids_for_host(Some("missing")).is_empty());
+        assert_eq!(
+            manager.forward_ids_for_host(None),
+            vec![dev_id, production_id]
+        );
     }
 }

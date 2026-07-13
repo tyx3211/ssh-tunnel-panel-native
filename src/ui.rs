@@ -224,9 +224,13 @@ impl PanelView {
         cx.notify();
     }
 
-    fn start_all(&mut self, cx: &mut Context<Self>) {
+    fn start_panel(&mut self, cx: &mut Context<Self>) {
+        let selected_host = self.selected_host.clone();
         let failures =
-            AppController::update_global(cx, |controller, _| controller.manager.start_all());
+            AppController::update_global(cx, |controller, _| match selected_host.as_deref() {
+                Some(host_alias) => controller.manager.start_for_host(host_alias),
+                None => controller.manager.start_all(),
+            });
         self.message = if failures.is_empty() {
             None
         } else {
@@ -238,8 +242,15 @@ impl PanelView {
         cx.notify();
     }
 
-    fn stop_all(&mut self, cx: &mut Context<Self>) {
-        AppController::update_global(cx, |controller, _| controller.manager.stop_all());
+    fn stop_panel(&mut self, cx: &mut Context<Self>) {
+        let selected_host = self.selected_host.clone();
+        AppController::update_global(cx, |controller, _| {
+            if let Some(host_alias) = selected_host.as_deref() {
+                controller.manager.stop_for_host(host_alias);
+            } else {
+                controller.manager.stop_all();
+            }
+        });
         self.message = None;
         cx.notify();
     }
@@ -476,11 +487,11 @@ impl PanelView {
                     .gap_2()
                     .child(
                         toolbar_button("toolbar-start-all", AppIcon::Zap, "一键启动")
-                            .on_click(cx.listener(|this, _, _, cx| this.start_all(cx))),
+                            .on_click(cx.listener(|this, _, _, cx| this.start_panel(cx))),
                     )
                     .child(
                         toolbar_button("toolbar-stop-all", AppIcon::CircleStop, "停止全部")
-                            .on_click(cx.listener(|this, _, _, cx| this.stop_all(cx))),
+                            .on_click(cx.listener(|this, _, _, cx| this.stop_panel(cx))),
                     )
                     .child(
                         toolbar_button("toolbar-new", IconName::Plus, "新建")
