@@ -3,13 +3,14 @@
     reason = "this module is the audited Win32 process-coordination boundary"
 )]
 
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 use async_channel::{Receiver, Sender};
 use thiserror::Error;
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, WAIT_FAILED, WAIT_OBJECT_0,
+    ERROR_ALREADY_EXISTS, GetLastError, HANDLE, WAIT_FAILED, WAIT_OBJECT_0,
 };
 use windows::Win32::System::Threading::{
     CreateEventW, CreateMutexW, INFINITE, SetEvent, WaitForMultipleObjects,
@@ -70,14 +71,6 @@ struct InstanceEvents {
     shutdown: OwnedHandle,
 }
 
-struct OwnedHandle(HANDLE);
-
-// SAFETY: kernel object handles are process-wide values and Windows explicitly supports waiting
-// on and signalling these event handles from threads other than the creating thread.
-unsafe impl Send for OwnedHandle {}
-// SAFETY: the wrapped handles are only used by thread-safe kernel synchronization functions.
-unsafe impl Sync for OwnedHandle {}
-
 impl SingleInstance {
     pub fn acquire() -> Result<Self, SingleInstanceError> {
         Self::acquire_named(MUTEX_NAME, ACTIVATION_EVENT_NAME)
@@ -87,25 +80,13 @@ impl SingleInstance {
         mutex_name: PCWSTR,
         activation_event_name: PCWSTR,
     ) -> Result<Self, SingleInstanceError> {
-        // SAFETY: default security is used, initial ownership is not requested, and the name is a
-        // valid, nul-terminated UTF-16 string scoped to the current login session.
-        let mutex = unsafe { CreateMutexW(None, false, mutex_name) }
-            .map(OwnedHandle)
-            .map_err(SingleInstanceError::CreateMutex)?;
-        // SAFETY: GetLastError is read immediately after the successful CreateMutexW call.
-        let primary = unsafe { GetLastError() } != ERROR_ALREADY_EXISTS;
-
-        // SAFETY: this creates or opens a named auto-reset event with default security. An
-        // auto-reset event intentionally coalesces repeated launch requests into one activation.
-        let activation_event = unsafe { CreateEventW(None, false, false, activation_event_name) }
-            .map(OwnedHandle)
+        let (mutex, primary) = create_mutex(mutex_name)?;
+        let activation_event = create_event(activation_event_name)
             .map_err(SingleInstanceError::CreateActivationEvent)?;
 
         if primary {
-            // SAFETY: a null name creates a private auto-reset event used only to stop the listener.
-            let shutdown = unsafe { CreateEventW(None, false, false, PCWSTR::null()) }
-                .map(OwnedHandle)
-                .map_err(SingleInstanceError::CreateShutdownEvent)?;
+            let shutdown =
+                create_event(PCWSTR::null()).map_err(SingleInstanceError::CreateShutdownEvent)?;
             Ok(Self::Primary(PrimaryInstance {
                 _mutex: mutex,
                 events: Arc::new(InstanceEvents {
@@ -145,7 +126,7 @@ impl Drop for PrimaryInstance {
     fn drop(&mut self) {
         // SAFETY: shutdown is a live event owned by `events`; signalling is thread-safe.
         unsafe {
-            let _ = SetEvent(self.events.shutdown.0);
+            let _ = SetEvent(as_win32_handle(&self.events.shutdown));
         }
         if let Some(listener) = self.listener.take() {
             let _ = listener.join();
@@ -156,21 +137,16 @@ impl Drop for PrimaryInstance {
 impl SecondaryInstance {
     pub fn request_activation(&self) -> Result<(), SingleInstanceError> {
         // SAFETY: activation_event is a live event handle and SetEvent is thread-safe.
-        unsafe { SetEvent(self.activation_event.0) }.map_err(SingleInstanceError::RequestActivation)
-    }
-}
-
-impl Drop for OwnedHandle {
-    fn drop(&mut self) {
-        // SAFETY: this object owns exactly one valid Win32 handle.
-        unsafe {
-            let _ = CloseHandle(self.0);
-        }
+        unsafe { SetEvent(as_win32_handle(&self.activation_event)) }
+            .map_err(SingleInstanceError::RequestActivation)
     }
 }
 
 fn listen_for_activation(events: &InstanceEvents, sender: &Sender<ActivationSignal>) {
-    let handles = [events.activation.0, events.shutdown.0];
+    let handles = [
+        as_win32_handle(&events.activation),
+        as_win32_handle(&events.shutdown),
+    ];
     loop {
         // SAFETY: both handles remain alive through the shared `events` reference for the entire
         // wait. Waiting on kernel event handles from this dedicated thread is supported by Win32.
@@ -189,6 +165,32 @@ fn listen_for_activation(events: &InstanceEvents, sender: &Sender<ActivationSign
             break;
         }
     }
+}
+
+fn create_mutex(name: PCWSTR) -> Result<(OwnedHandle, bool), SingleInstanceError> {
+    // SAFETY: default security is used, initial ownership is not requested, and the name is a
+    // valid, nul-terminated UTF-16 string scoped to the current login session.
+    let raw =
+        unsafe { CreateMutexW(None, false, name) }.map_err(SingleInstanceError::CreateMutex)?;
+    // SAFETY: GetLastError is read immediately after the successful CreateMutexW call.
+    let primary = unsafe { GetLastError() } != ERROR_ALREADY_EXISTS;
+    // SAFETY: CreateMutexW returned a newly owned, non-null kernel handle which is released with
+    // CloseHandle. Ownership is transferred exactly once into the standard-library wrapper.
+    let handle = unsafe { OwnedHandle::from_raw_handle(raw.0) };
+    Ok((handle, primary))
+}
+
+fn create_event(name: PCWSTR) -> windows::core::Result<OwnedHandle> {
+    // SAFETY: default security is used and this creates or opens an auto-reset event. The name is
+    // either a valid, nul-terminated UTF-16 string or null for a private event.
+    let raw = unsafe { CreateEventW(None, false, false, name) }?;
+    // SAFETY: CreateEventW returned a newly owned, non-null kernel handle which is released with
+    // CloseHandle. Ownership is transferred exactly once into the standard-library wrapper.
+    Ok(unsafe { OwnedHandle::from_raw_handle(raw.0) })
+}
+
+fn as_win32_handle(handle: &OwnedHandle) -> HANDLE {
+    HANDLE(handle.as_raw_handle())
 }
 
 #[cfg(test)]
