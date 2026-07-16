@@ -27,6 +27,7 @@ Requirements and notes:
 - Finds the nearest higher local port for `-L` when the requested port is occupied, and shows the actual selected port.
 - Preserves the requested remote port for `-R` and reports remote bind failures.
 - Stays available in the Windows tray when the main window is closed.
+- Enforces one application instance per Windows login session and restores the existing window on a repeated launch.
 - Stops every managed SSH process when **Exit** is selected from the tray.
 - Uses Windows Job Objects so abnormal application termination also tears down managed SSH process trees.
 
@@ -62,6 +63,7 @@ Choose this native version when low idle overhead, a smaller installer, and nati
 - Rust 2024 with a pinned stable toolchain.
 - [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) and GPUI Component for the native interface.
 - `tray-icon` for the native Windows notification-area menu.
+- A Windows named mutex prevents duplicate application instances before UI or SSH initialization; a repeated launch restores and activates the existing GPUI window.
 - `thiserror` for typed errors and Serde JSON with atomic file replacement for persistence.
 - Windows Job Objects for SSH process-tree ownership.
 - A narrowly audited Win32 window-visibility adapter implements standard close-to-tray behavior because GPUI 0.2.2 does not expose single-window hide/show on Windows.

@@ -13,10 +13,13 @@ use thiserror::Error;
 
 use crate::assets::AppAssets;
 use crate::manager::{ManagerError, TunnelManager};
+use crate::single_instance::SingleInstance;
 use crate::store::{JsonStore, StoreError};
 use crate::tray::{TrayAction, TrayController, TrayError};
 use crate::ui::PanelView;
-use crate::window_visibility::{WindowVisibilityError, hide_window, show_window};
+use crate::window_visibility::{
+    WindowVisibilityError, activate_existing_window, hide_window, show_window,
+};
 
 #[derive(Debug, Error)]
 enum StartupError {
@@ -57,6 +60,20 @@ impl AppController {
 
 pub fn run() {
     install_panic_hook();
+    let instance = match SingleInstance::acquire() {
+        Ok(instance) => instance,
+        Err(error) => {
+            write_diagnostic("single-instance", &error.to_string());
+            return;
+        }
+    };
+    if !instance.is_primary() {
+        if let Err(error) = activate_existing_window() {
+            write_diagnostic("activate-existing-window", &error.to_string());
+        }
+        return;
+    }
+
     Application::new().with_assets(AppAssets).run(|cx| {
         gpui_component::init(cx);
         let (controller, wake_receiver) = match AppController::initialize() {
@@ -111,6 +128,7 @@ fn open_panel(cx: &mut App) {
         ..Default::default()
     };
     match cx.open_window(options, |window, cx| {
+        window.set_window_title("SSH Tunnel Panel");
         window.on_window_should_close(cx, |window, _cx| match hide_window(window) {
             Ok(()) => false,
             Err(error) => {

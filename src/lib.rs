@@ -7,6 +7,8 @@ mod assets;
 pub mod manager;
 pub mod model;
 pub mod ports;
+#[cfg(feature = "ui")]
+mod single_instance;
 pub mod ssh_config;
 pub mod store;
 #[cfg(feature = "ui")]

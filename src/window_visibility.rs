@@ -4,12 +4,21 @@
 )]
 
 use std::ffi::c_void;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use gpui::Window;
 use raw_window_handle::{HandleError, RawWindowHandle};
 use thiserror::Error;
 use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::WindowsAndMessaging::{SW_HIDE, SW_SHOW, ShowWindow};
+use windows::Win32::UI::WindowsAndMessaging::{
+    FindWindowW, IsIconic, SW_HIDE, SW_RESTORE, SW_SHOW, SetForegroundWindow, ShowWindow,
+    ShowWindowAsync,
+};
+use windows::core::w;
+
+const EXISTING_WINDOW_LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
+const EXISTING_WINDOW_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Error)]
 pub enum WindowVisibilityError {
@@ -17,6 +26,10 @@ pub enum WindowVisibilityError {
     Handle(HandleError),
     #[error("当前窗口不是 Win32 窗口")]
     UnsupportedHandle,
+    #[error("等待已有 GPUI 窗口超时")]
+    ExistingWindowNotFound,
+    #[error("Windows 拒绝将已有窗口切换到前台")]
+    ForegroundActivationRejected,
 }
 
 pub fn hide_window(window: &Window) -> Result<(), WindowVisibilityError> {
@@ -25,6 +38,36 @@ pub fn hide_window(window: &Window) -> Result<(), WindowVisibilityError> {
 
 pub fn show_window(window: &Window) -> Result<(), WindowVisibilityError> {
     set_window_visibility(window, true)
+}
+
+pub fn activate_existing_window() -> Result<(), WindowVisibilityError> {
+    let deadline = Instant::now() + EXISTING_WINDOW_LOOKUP_TIMEOUT;
+    let hwnd = loop {
+        // SAFETY: both arguments are static, nul-terminated UTF-16 strings. The returned HWND is
+        // only used for non-owning window-management calls in this function.
+        if let Ok(hwnd) = unsafe { FindWindowW(w!("Zed::Window"), w!("SSH Tunnel Panel")) } {
+            break hwnd;
+        }
+        if Instant::now() >= deadline {
+            return Err(WindowVisibilityError::ExistingWindowNotFound);
+        }
+        thread::sleep(EXISTING_WINDOW_RETRY_INTERVAL);
+    };
+
+    // SAFETY: `hwnd` belongs to the first application instance and remains owned by GPUI.
+    // Restore only minimized windows so a hidden maximized window keeps its maximized state.
+    unsafe {
+        let command = if IsIconic(hwnd).as_bool() {
+            SW_RESTORE
+        } else {
+            SW_SHOW
+        };
+        let _ = ShowWindowAsync(hwnd, command);
+        if !SetForegroundWindow(hwnd).as_bool() {
+            return Err(WindowVisibilityError::ForegroundActivationRejected);
+        }
+    }
+    Ok(())
 }
 
 fn set_window_visibility(window: &Window, visible: bool) -> Result<(), WindowVisibilityError> {
