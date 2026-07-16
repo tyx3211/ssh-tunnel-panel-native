@@ -13,13 +13,13 @@ use thiserror::Error;
 
 use crate::assets::AppAssets;
 use crate::manager::{ManagerError, TunnelManager};
-use crate::single_instance::SingleInstance;
+use crate::platform::{
+    ActivationSignal, PrimaryInstance, SingleInstance, WindowVisibilityError, hide_window,
+    show_window,
+};
 use crate::store::{JsonStore, StoreError};
 use crate::tray::{TrayAction, TrayController, TrayError};
 use crate::ui::PanelView;
-use crate::window_visibility::{
-    WindowVisibilityError, activate_existing_window, hide_window, show_window,
-};
 
 #[derive(Debug, Error)]
 enum StartupError {
@@ -36,12 +36,13 @@ pub(crate) struct AppController {
     tray: TrayController,
     window: Option<AnyWindowHandle>,
     panel: Option<WeakEntity<PanelView>>,
+    _instance: PrimaryInstance,
 }
 
 impl Global for AppController {}
 
 impl AppController {
-    fn initialize() -> Result<(Self, Receiver<()>), StartupError> {
+    fn initialize(instance: PrimaryInstance) -> Result<(Self, Receiver<()>), StartupError> {
         let (wake_sender, wake_receiver) = async_channel::bounded(1);
         let store = JsonStore::prepare_default()?;
         let manager = TunnelManager::initialize_notifying(store, wake_sender.clone())?;
@@ -52,6 +53,7 @@ impl AppController {
                 tray,
                 window: None,
                 panel: None,
+                _instance: instance,
             },
             wake_receiver,
         ))
@@ -67,16 +69,26 @@ pub fn run() {
             return;
         }
     };
-    if !instance.is_primary() {
-        if let Err(error) = activate_existing_window() {
-            write_diagnostic("activate-existing-window", &error.to_string());
+    let mut instance = match instance {
+        SingleInstance::Primary(instance) => instance,
+        SingleInstance::Secondary(instance) => {
+            if let Err(error) = instance.request_activation() {
+                write_diagnostic("request-activation", &error.to_string());
+            }
+            return;
         }
-        return;
-    }
+    };
+    let activation_receiver = match instance.start_activation_listener() {
+        Ok(receiver) => receiver,
+        Err(error) => {
+            write_diagnostic("activation-listener", &error.to_string());
+            return;
+        }
+    };
 
-    Application::new().with_assets(AppAssets).run(|cx| {
+    Application::new().with_assets(AppAssets).run(move |cx| {
         gpui_component::init(cx);
-        let (controller, wake_receiver) = match AppController::initialize() {
+        let (controller, wake_receiver) = match AppController::initialize(instance) {
             Ok(initialized) => initialized,
             Err(error) => {
                 write_diagnostic("startup", &error.to_string());
@@ -102,6 +114,7 @@ pub fn run() {
 
         open_panel(cx);
         start_event_loop(wake_receiver, cx);
+        start_activation_loop(activation_receiver, cx);
     });
 }
 
@@ -190,6 +203,25 @@ fn start_event_loop(wake_receiver: Receiver<()>, cx: &mut App) {
                 .is_err()
             {
                 break;
+            }
+        }
+    })
+    .detach();
+}
+
+fn start_activation_loop(activation_receiver: Receiver<ActivationSignal>, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        while let Ok(signal) = activation_receiver.recv().await {
+            match signal {
+                ActivationSignal::Requested => {
+                    if cx.update(open_panel).is_err() {
+                        break;
+                    }
+                }
+                ActivationSignal::ListenerFailed(error) => {
+                    write_diagnostic("activation-listener", &error.to_string());
+                    break;
+                }
             }
         }
     })

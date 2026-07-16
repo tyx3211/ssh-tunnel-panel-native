@@ -63,10 +63,11 @@ Choose this native version when low idle overhead, a smaller installer, and nati
 - Rust 2024 with a pinned stable toolchain.
 - [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) and GPUI Component for the native interface.
 - `tray-icon` for the native Windows notification-area menu.
-- A Windows named mutex prevents duplicate application instances before UI or SSH initialization; a repeated launch restores and activates the existing GPUI window.
+- A Windows named mutex prevents duplicate application instances before UI or SSH initialization. A named auto-reset event forwards repeated launches to the first process, which restores and activates its window on the GPUI thread.
 - `thiserror` for typed errors and Serde JSON with atomic file replacement for persistence.
 - Windows Job Objects for SSH process-tree ownership.
 - A narrowly audited Win32 window-visibility adapter implements standard close-to-tray behavior because GPUI 0.2.2 does not expose single-window hide/show on Windows.
+- Windows-specific process coordination and window visibility are isolated behind a conditionally compiled platform module so future macOS and Linux backends do not leak native APIs into the GPUI application layer.
 - Event-driven UI and process supervision: there is no periodic UI polling while idle.
 - Shared immutable log snapshots avoid copying complete log histories during each render.
 - Release builds use optimization level 3, fat LTO, one codegen unit, a statically linked MSVC runtime, stripped symbols, and aborting panics.
